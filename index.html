@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0">
+    <title>3D Model Viewer</title>
+    <script src="./scripts/three.js"></script>
+    <script src="./scripts/STLLoader.js"></script>
+    <script src="./scripts/OBJLoader.js"></script>
+    <script src="./scripts/MTLLoader.js"></script>
+    <script src="./scripts/OrbitControls.js"></script>
+    <link rel="stylesheet" href="./style/main.css">
+</head>
+
+<body>
+<div id="panel" class="side-panel"></div>
+<div id="model" style="width: 90%; height: 100%;" class="model-panel"></div>
+<script>
+    let _elementID = "model";
+    var scene, elem, camera, renderer, controls;
+    var stl_loader, obj_loader, mtl_loader;
+    const objects = new Map();
+    var raycaster, mouse;
+    const hover_material = new THREE.MeshPhongMaterial({
+        color: 0x666666,
+        specular: 100,
+        shininess: 100
+    });
+    const basic_material = new THREE.MeshPhongMaterial({
+        color: 0xb3b3b3,
+        specular: 100,
+        shininess: 100
+    });
+
+    function setup(elementID) {
+        _elementID = elementID;
+    }
+
+    function createScene() {
+        scene = new THREE.Scene();
+        elem = document.getElementById(_elementID);
+        camera = new THREE.PerspectiveCamera(70, elem.clientWidth / elem.clientHeight, 1, 10000);
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(elem.clientWidth, elem.clientHeight);
+        elem.appendChild(renderer.domElement);
+
+        camera.aspect = elem.clientWidth / elem.clientHeight;
+        camera.updateProjectionMatrix();
+
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.rotateSpeed = 0.1;
+        controls.dampingFactor = 0.1;
+        controls.enableZoom = true;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 0.1;
+        scene.add(new THREE.HemisphereLight(0xffffff, 1.5));
+        camera.position.z = 500;
+
+        // Enable shadow mapping
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
+
+    function push_model(id, model, hover = false, color = 0xb3b3b3, position = new THREE.Vector3(0, 0, 0), rotation = new THREE.Vector3(-Math.PI / 2, 0, 0)) {
+        stl_loader.load(model, function (geometry) {
+            var material = new THREE.MeshPhongMaterial({
+                color: color,
+                specular: 100,
+                shininess: 100
+            });
+            var mesh = new THREE.Mesh(geometry, material);
+            mesh.castShadow = true; // Enable shadow casting
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+
+            var middle = new THREE.Vector3();
+            geometry.computeBoundingBox();
+            geometry.boundingBox.getCenter(middle);
+            mesh.geometry.applyMatrix4(new THREE.Matrix4().makeTranslation(-middle.x, -middle.y, -middle.z));
+
+            mesh.position.copy(position);
+            mesh.rotation.set(rotation.x, rotation.y, rotation.z);
+            objects.set(id, mesh);
+        });
+    }
+
+    function push_model_material(id, model, material, position = new THREE.Vector3(0, 0, 0), rotation = new THREE.Vector3(-Math.PI / 2, 0, 0)) {
+        const new_mtl_loader = new THREE.MTLLoader();
+        const new_obj_loader = new THREE.OBJLoader();
+
+        new_mtl_loader.load(material, function (materials) {
+            materials.preload();
+            new_obj_loader.setMaterials(materials);
+            new_obj_loader.load(model, function (object) {
+                object.traverse(function (child) {
+                    if (child instanceof THREE.Mesh) {
+                        // Compute bounding box
+                        var boundingBox = new THREE.Box3().setFromObject(child);
+                        var middle = new THREE.Vector3();
+                        boundingBox.getCenter(middle);
+
+                        // Apply translation to center the object
+                        child.geometry.translate(-middle.x, -middle.y, -middle.z);
+                        child.castShadow = true; // Enable shadow casting
+                    }
+                });
+
+                // Set position and rotation
+                object.position.copy(position);
+                object.rotation.set(rotation.x, rotation.y, rotation.z);
+                object.receiveShadow = true;
+                scene.add(object);
+                objects.set(id, object);
+            });
+        });
+    }
+
+    function show_model(id) {
+        objects.get(id).visible = true;
+    }
+
+    function hide_model(id) {
+        objects.get(id).visible = false;
+    }
+
+    function pop_model(id) {
+        scene.remove(objects.get(id));
+    }
+
+    function get_model(id) {
+        return objects.get(id);
+    }
+
+    function STLViewer() {
+        stl_loader = new THREE.STLLoader();
+        obj_loader = new THREE.OBJLoader();
+        mtl_loader = new THREE.MTLLoader();
+        raycaster = new THREE.Raycaster();
+        mouse = new THREE.Vector2();
+        window.addEventListener('mousemove', onMouseMove);
+
+        var animate = function () {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        };
+        animate();
+    }
+
+    var intersected_model = null;
+    var original_material = null;
+
+    function onMouseMove(event) {
+        // Calculate mouse position in normalized device coordinates
+        // (-1 to +1) for both components
+        let this_object = elem.getBoundingClientRect();
+        mouse.x = ((event.clientX - this_object.x) / this_object.width) * 2 - 1;
+        mouse.y = -((event.clientY - this_object.y) / this_object.height) * 2 + 1;
+
+        // Update the picking ray with the camera and mouse position
+        raycaster.setFromCamera(mouse, camera);
+
+        // Calculate objects intersecting the picking ray
+        var intersects = raycaster.intersectObjects(scene.children);
+
+        if (intersects.length > 0) {
+            if (intersected_model == null || (intersected_model.object.id !== intersects[0].object.id)) {
+                if(intersected_model !== null){
+                    intersected_model.object.material = original_material;
+                }
+                intersected_model = intersects[0];
+                console.log(intersected_model);
+                original_material = intersected_model.object.material;
+                intersected_model.object.material = hover_material;
+
+            }
+        } else {
+            if (intersected_model != null) {
+                intersected_model.object.material = original_material;
+                intersected_model = null;
+            }
+        }
+    }
+
+    function create_block(id, width, height, depth, position = new THREE.Vector3(0, 0, 0    )) {
+        const geometry = new THREE.BoxGeometry(width, height, depth);
+        const mesh = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
+            color: 0xbd5226,
+            specular: 100,
+            shininess: 100
+        }));
+        mesh.position.copy(position);
+        mesh.castShadow = true; // Enable shadow casting
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        objects.set(id, mesh);
+    }
+</script>
+<script type="text/javascript">
+
+    let model_id = 0;
+    window.onload = function () {
+        setup("model");
+        createScene();
+        STLViewer();
+        create_hive(3, new THREE.Vector3(0, 0, 0));
+        create_hive(2, new THREE.Vector3(0, 0, 500));
+        create_hive(1, new THREE.Vector3(0, 0, -500));
+        push_model(model_id++, "./models/Stojan_vaha.stl", false, 0xb3b3b3, new THREE.Vector3(0, -291, -800));
+        push_model(model_id++, "./models/Stojan_vaha.stl", false, 0xb3b3b3, new THREE.Vector3(0, -291, 800), new THREE.Vector3(Math.PI / 2, Math.PI, 0));
+        create_block(model_id++, 42, 64, 1800, new THREE.Vector3(210, -115.5, 0));
+        create_block(model_id++, 42, 64, 1800, new THREE.Vector3(-210, -115.5, 0));
+    }
+
+    function create_hive(height, pos) {
+        let i;
+        if (height < 1) height = 1;
+        push_model_material(model_id++, "./models/bottom.obj", "./models/wood.mtl", new THREE.Vector3(pos.x, pos.y, pos.z));
+        for (i = 1; i < height; i++) {
+            push_model_material(model_id, "./models/stack.obj", "./models/wood.mtl", new THREE.Vector3(pos.x, i * 168 + pos.y, pos.z));
+            model_id++;
+        }
+        push_model_material(model_id, "./models/top.obj", "./models/wood.mtl", new THREE.Vector3(pos.x, i * 168 + pos.y, pos.z));
+        model_id++;
+        push_model_material(model_id, "./models/cover.obj", "./models/cover.mtl", new THREE.Vector3(pos.x, i * 168 + pos.y+43, pos.z));
+        model_id++;
+    }
+</script>
+</body>
+
+</html>
+
